@@ -20,19 +20,21 @@ def _connect_to_data_source(ti):
     response = requests.get(url)
     if response.status_code == 200:
         data = response.json()
+        print(data)
         return data
     else:
         raise Exception(f'Request failed with status code: {response.status_code}')
 
 
-def _check_temperature_task(ti):
-    response = ti.xcom_pull(task_ids='connect_to_data_source_task')
+def _check_temperature_task(task_instance):
+    response = task_instance.xcom_pull(task_ids='connect_to_data_source_task')
     main_weather = response['weather'][0]['main']
+    print(main_weather)
     return 'Clouds' in main_weather
 
 
-def _send_email_task(ti):
-    is_raining = ti.xcom_pull(task_ids='check_temperature_task')
+def _send_email_task(task_instance):
+    is_raining = task_instance.xcom_pull(task_ids='check_temperature_task')
     if not is_raining:
         return
     message = f'{mailjet_api_key}:{mailjet_secret_key}'
@@ -56,8 +58,7 @@ def _send_email_task(ti):
                     }
                 ],
                 "Subject": "Your email flight plan!",
-                "TextPart": "Dear passenger, welcome to Mailjet! May the delivery force be with you!",
-                "HTMLPart": "<h3>Dear passenger 1, welcome to <a href=\"https://www.mailjet.com/\">Mailjet!</a></h3><br />May the delivery force be with you!"
+                "TextPart": "Dear passenger, welcome to Mailjet! May the delivery force be with you!"
             }
         ]
     })
@@ -68,9 +69,10 @@ def _send_email_task(ti):
     }
 
     response = requests.request("POST", url, headers=headers, data=payload)
+    print(response)
 
 
-with DAG("my_dag", start_date=datetime(2021, 1, 1),
+with DAG("weather_temperature_alert_dag", start_date=datetime(2021, 1, 1),
          schedule_interval="@daily", catchup=False) as dag:
     connect_to_data_source_task = PythonOperator(
         task_id="connect_to_data_source_task",
