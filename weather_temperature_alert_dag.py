@@ -1,89 +1,90 @@
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
-from airflow.operators.email_operator import EmailOperator
+import base64
+import json
 from datetime import datetime, timedelta
 import requests
+from random import randint
+from datetime import datetime
 
-default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2023, 1, 1),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-}
+openweathermap_api_key = '532e673cf745e7ca2866f84bc0782f8e'
+openweathermap_city = 'Tel Aviv, IL'
+mailjet_api_key = '9dc36b6e873dae54064480583a8f8a29'
+mailjet_secret_key = '99f40a0b993e12c1e4c10a0ee186dc86'
 
-dag = DAG(
-    'email_dag_example',
-    default_args=default_args,
-    schedule_interval=timedelta(hours=24),
-    catchup=False
-)
 
-def connect_to_data_source(**kwargs):
-    # API endpoint for weather data
+def _connect_to_data_source(ti):
     endpoint = 'http://api.openweathermap.org/data/2.5/weather'
-    # API key
-    api_key = 'your_api_key'
-    # City and country code
-    city = 'London,UK'
-    
-    # Construct the API request
-    url = f'{endpoint}?q={city}&appid={api_key}'
-    
-    # Send the API request
+    city = openweathermap_city
+    url = f'{endpoint}?q={city}&appid={openweathermap_api_key}'
     response = requests.get(url)
-    
-    # Check for a successful response
     if response.status_code == 200:
-        # Extract the weather data
         data = response.json()
         return data
     else:
         raise Exception(f'Request failed with status code: {response.status_code}')
 
-def check_temperature(**kwargs):
-    data = kwargs['ti'].xcom_pull(task_ids='connect_to_data_source')
-    temperature = data['main']['temp']
-    threshold = 280.0 # The temperature threshold in Kelvin
-    if temperature > threshold:
-        return True
-    return False
 
-def send_email(**kwargs):
-    temperature_above_threshold = kwargs['ti'].xcom_pull(task_ids='check_temperature')
-    if temperature_above_threshold:
-        email_operator = EmailOperator(
-            task_id='send_email',
-            to='youremail@example.com',
-            subject='High Temperature Alert',
-            html_content="The temperature is above the threshold.",
-            dag=dag
-        )
-        email_operator.execute(context=kwargs)
+def _check_temperature_task(ti):
+    response = ti.xcom_pull(task_ids='connect_to_data_source_task')
+    main_weather = response['weather'][0]['main']
+    return 'Clouds' in main_weather
 
-connect_to_data_source_task = PythonOperator(
-    task_id='connect_to_data_source',
-    python_callable=connect_to_data_source,
-    provide_context=True,
-    dag=dag
-)
 
-check_temperature_task = PythonOperator(
-    task_id='check_temperature',
-    python_callable=check_temperature,
-    provide_context=True,
-    dag=dag
-)
+def _send_email_task(ti):
+    is_raining = ti.xcom_pull(task_ids='check_temperature_task')
+    if not is_raining:
+        return
+    message = f'{mailjet_api_key}:{mailjet_secret_key}'
+    sample_string_bytes = message.encode("ascii")
+    base64_bytes = base64.b64encode(sample_string_bytes)
+    base64_string = base64_bytes.decode("ascii")
 
-send_email_task = PythonOperator(
-    task_id='send_email',
-    python_callable=send_email,
-    provide_context=True,
-    dag=dag,
-    trigger_rule='one_success' # Only run if the previous task (check_temperature) succeeds
-)
+    url = "https://api.mailjet.com/v3.1/send"
 
-Set the task dependencies
-connect_to_data_source_task >> check_temperature_task >> send_email_task
+    payload = json.dumps({
+        "Messages": [
+            {
+                "From": {
+                    "Email": "oferusa@gmail.com",
+                    "Name": "Your Mailjet Pilot"
+                },
+                "To": [
+                    {
+                        "Email": "oferusa@gmail.com",
+                        "Name": "Passenger 1"
+                    }
+                ],
+                "Subject": "Your email flight plan!",
+                "TextPart": "Dear passenger, welcome to Mailjet! May the delivery force be with you!",
+                "HTMLPart": "<h3>Dear passenger 1, welcome to <a href=\"https://www.mailjet.com/\">Mailjet!</a></h3><br />May the delivery force be with you!"
+            }
+        ]
+    })
+
+    headers = {
+        'Content-Type': 'application/json',
+        'Authorization': f'Basic {base64_string}'
+    }
+
+    response = requests.request("POST", url, headers=headers, data=payload)
+
+
+with DAG("my_dag", start_date=datetime(2021, 1, 1),
+         schedule_interval="@daily", catchup=False) as dag:
+    connect_to_data_source_task = PythonOperator(
+        task_id="connect_to_data_source_task",
+        python_callable=_connect_to_data_source
+    )
+
+    check_temperature_task = PythonOperator(
+        task_id="check_temperature_task",
+        python_callable=_check_temperature_task
+    )
+
+    send_email_task = PythonOperator(
+        task_id="send_email_task",
+        python_callable=_send_email_task
+    )
+
+    connect_to_data_source_task >> check_temperature_task >> send_email_task
